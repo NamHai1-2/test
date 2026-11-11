@@ -30,6 +30,7 @@ const page = await client.listTransactions('CUS001', { page: 1, type: 'ISSUE', d
 | `redeemPoints({ customerCode, points, idempotencyKey? })` | `Transaction` |
 | `getBalance(customerCode)` | `{ customerCode, balance }` |
 | `listTransactions(customerCode, { page?, type?, status?, dateFrom?, dateTo? })` | `Page<Transaction>` (20 per page, newest first) |
+| `getLoyaltyRules()` | `{ earnRatio, minRedemptionThreshold }` (`MSG32` when the Owner has not saved rules) |
 
 Field names are camelCase (`transactionId`, `balanceAfter`, `suiDigest`, `explorerUrl` ...). A transaction is
 `PENDING_ANCHOR` until the worker writes it to Sui; `suiDigest` and `explorerUrl` are then filled.

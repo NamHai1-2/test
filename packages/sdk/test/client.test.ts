@@ -278,3 +278,30 @@ describe('configuration', () => {
     expect(() => new OctaPointClient({ ...ok, timeoutMs: 0 })).toThrow(TypeError);
   });
 });
+
+describe('getLoyaltyRules (api-spec A.3, used by the MCP server)', () => {
+  it('sends a signed GET without body and maps the answer to camelCase', async () => {
+    respond(200, { earn_ratio: 10000, min_redemption_threshold: 50 });
+    const rules = await client().getLoyaltyRules();
+
+    expect(rules).toEqual({ earnRatio: 10000, minRedemptionThreshold: 50 });
+    const sent = lastSent();
+    expect(sent.url).toBe('http://localhost:3001/api/v1/loyalty-rules');
+    expect(sent.method).toBe('GET');
+    expect(sent.body).toBeUndefined();
+    expect(sent.headers['X-Signature']).toBe(
+      sign(SECRET, {
+        timestamp: '1700000000',
+        method: 'GET',
+        target: '/api/v1/loyalty-rules',
+        body: '',
+      }),
+    );
+    expect(sent.headers).not.toHaveProperty('X-Idempotency-Key');
+  });
+
+  it('throws OctaPointError MSG32 when the rules are not set', async () => {
+    respond(422, { code: 'MSG32', message: 'Loyalty rules are not set.' });
+    await expect(client().getLoyaltyRules()).rejects.toMatchObject({ code: 'MSG32', httpStatus: 422 });
+  });
+});

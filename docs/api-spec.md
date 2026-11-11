@@ -221,6 +221,7 @@ client.issuePoints({ customerCode, amount, idempotencyKey? })      // → Transa
 client.redeemPoints({ customerCode, points, idempotencyKey? })     // → Transaction
 client.getBalance(customerCode)                                    // → { customerCode, balance }
 client.listTransactions(customerCode, { page?, type?, status?, dateFrom?, dateTo? }) // → Page<Transaction>
+client.getLoyaltyRules()                                           // → { earnRatio, minRedemptionThreshold } (Should, for the MCP tool)
 ```
 - Every call adds `X-API-Key`, `X-Timestamp`, `X-Signature` (A.2). For issue/redeem it adds `X-Idempotency-Key` (`crypto.randomUUID()` unless supplied); the key is part of the signature.
 - The SDK does **not** retry automatically. To retry safely after a timeout, the caller passes the same `idempotencyKey` again.

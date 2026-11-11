@@ -30,6 +30,14 @@ export interface Balance {
   balance: number;
 }
 
+/** Loyalty rules of the merchant (GET /loyalty-rules, api-spec A.3). */
+export interface LoyaltyRules {
+  /** VND per point. */
+  earnRatio: number;
+  /** Smallest number of points that can be redeemed. */
+  minRedemptionThreshold: number;
+}
+
 export interface OctaPointClientOptions {
   /** Origin of the API, for example "http://localhost:3001". "/api/v1" is added by the SDK. */
   baseUrl: string;

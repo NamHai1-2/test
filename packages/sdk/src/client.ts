@@ -5,6 +5,7 @@ import type {
   Balance,
   IssuePointsInput,
   ListTransactionsOptions,
+  LoyaltyRules,
   OctaPointClientOptions,
   Page,
   RedeemPointsInput,
@@ -142,6 +143,15 @@ export class OctaPointClient {
       pageSize: raw.page_size,
       total: raw.total,
     };
+  }
+
+  /** Should-have (used by the MCP tool get_loyalty_rules). MSG32 when the Owner has not saved rules yet. */
+  async getLoyaltyRules(): Promise<LoyaltyRules> {
+    const raw = await this.request<{ earn_ratio: number; min_redemption_threshold: number }>(
+      'GET',
+      '/loyalty-rules',
+    );
+    return { earnRatio: raw.earn_ratio, minRedemptionThreshold: raw.min_redemption_threshold };
   }
 
   private async request<T>(

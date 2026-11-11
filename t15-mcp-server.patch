@@ -1,0 +1,730 @@
+diff --git a/docs/api-spec.md b/docs/api-spec.md
+index fd02b53..89aecc1 100644
+--- a/docs/api-spec.md
++++ b/docs/api-spec.md
+@@ -221,6 +221,7 @@ client.issuePoints({ customerCode, amount, idempotencyKey? })      // → Transa
+ client.redeemPoints({ customerCode, points, idempotencyKey? })     // → Transaction
+ client.getBalance(customerCode)                                    // → { customerCode, balance }
+ client.listTransactions(customerCode, { page?, type?, status?, dateFrom?, dateTo? }) // → Page<Transaction>
++client.getLoyaltyRules()                                           // → { earnRatio, minRedemptionThreshold } (Should, for the MCP tool)
+ ```
+ - Every call adds `X-API-Key`, `X-Timestamp`, `X-Signature` (A.2). For issue/redeem it adds `X-Idempotency-Key` (`crypto.randomUUID()` unless supplied); the key is part of the signature.
+ - The SDK does **not** retry automatically. To retry safely after a timeout, the caller passes the same `idempotencyKey` again.
+diff --git a/packages/mcp/README.md b/packages/mcp/README.md
+new file mode 100644
+index 0000000..44b5dc7
+--- /dev/null
++++ b/packages/mcp/README.md
+@@ -0,0 +1,81 @@
++# @octapoint/mcp
++
++Read-only MCP server for OctaPoint (`docs/api-spec.md` C.1, SRS 3.2.4.1). It lets an AI assistant such as Claude Desktop read
++the **balance** and the **latest transactions** of a customer of one merchant. It runs on your own machine over stdio
++and uses `@octapoint/sdk`, so it signs every request like any other client (HMAC, A.2).
++
++**No tool can change data (BR-14).** Only these tools exist:
++
++| Tool | Input | Output |
++|---|---|---|
++| `get_balance` | `{ customer_code }` | `{ customer_code, balance }` |
++| `list_transactions` | `{ customer_code }` | the latest 10, newest first: `[{ transaction_id, type, points, status, sui_digest }]` (`sui_digest` is `null` until the transaction is anchored) |
++| `get_loyalty_rules` (Should) | none | `{ earn_ratio, min_redemption_threshold }` |
++
++`customer_code` is trimmed and upper-cased by the server (`" cus001 "` becomes `CUS001`), because assistants often send lower case.
++The API itself stays strict.
++
++API errors come back as MCP tool errors with the original code and message, for example `{"code":"MSG22","message":"..."}`
++(unknown customer) or `MSG18` (unknown, revoked or suspended key). `MSG32` from `get_loyalty_rules` means the Owner has not saved rules yet.
++An error that is not an API error becomes `MSG23`.
++
++## Configuration
++
++Three environment variables (set by the MCP client, see below). The server stops at start-up and names the missing ones.
++
++| Variable | Example |
++|---|---|
++| `OCTAPOINT_BASE_URL` | `http://localhost:3001` (origin only, no `/api/v1`) |
++| `OCTAPOINT_API_KEY` | `oct_...` (key id from the portal, page API Keys) |
++| `OCTAPOINT_API_SECRET` | the secret shown once when the key was created |
++
++The secret is never printed or logged. Use a key of the merchant whose data the assistant may read; the server sees only that merchant (BR-01).
++
++## Run with Claude Desktop
++
++1. Start the API (`pnpm --filter api dev`) and make sure the merchant has a customer and an API key.
++2. Open `claude_desktop_config.json` (Claude Desktop → Settings → Developer → Edit Config) and add the server.
++   Use the path of your clone; on Windows write `\\` in JSON strings.
++
++```json
++{
++  "mcpServers": {
++    "octapoint": {
++      "command": "pnpm",
++      "args": ["-C", "D:\\path\\to\\octapoint", "--silent", "--filter", "@octapoint/mcp", "start"],
++      "env": {
++        "OCTAPOINT_BASE_URL": "http://localhost:3001",
++        "OCTAPOINT_API_KEY": "oct_REPLACE_ME",
++        "OCTAPOINT_API_SECRET": "REPLACE_ME"
++      }
++    }
++  }
++}
++```
++
++`--silent` matters: stdout carries the MCP protocol, and pnpm would otherwise print its own header lines into it.
++
++3. Restart Claude Desktop. The tools `get_balance`, `list_transactions` and `get_loyalty_rules` appear in the tools list.
++4. Ask, for example: "What is the balance of customer cus001?" or "Show the last transactions of CUS001".
++
++## Try it without Claude Desktop
++
++```bash
++OCTAPOINT_BASE_URL=http://localhost:3001 OCTAPOINT_API_KEY=oct_... OCTAPOINT_API_SECRET=... \
++  npx @modelcontextprotocol/inspector pnpm --silent --filter @octapoint/mcp start
++```
++
++(PowerShell: set the three variables with `$env:NAME = "value"` first.) The inspector lists the tools and lets you call them.
++
++## Tests
++
++```bash
++pnpm --filter @octapoint/mcp test
++pnpm --filter @octapoint/mcp typecheck
++```
++
++`test/tools.test.ts` asserts the exact tool list, that no tool name suggests a write, the upper-casing of the customer code,
++the output mapping, the error pass-through and the start-up check of the environment variables.
++
++Layout: `src/tools.ts` (tool logic, testable with a fake client), `src/server.ts` (registers the tools),
++`src/config.ts` (environment), `src/index.ts` (stdio entry point). Remote (HTTP) transport is out of scope.
+diff --git a/packages/mcp/package.json b/packages/mcp/package.json
+index 1460a34..d5e106e 100644
+--- a/packages/mcp/package.json
++++ b/packages/mcp/package.json
+@@ -4,13 +4,21 @@
+   "version": "0.1.0",
+   "description": "OctaPoint MCP server (stdio, read-only).",
+   "type": "module",
++  "engines": { "node": ">=20" },
+   "scripts": {
+-    "typecheck": "tsc --noEmit"
++    "start": "tsx src/index.ts",
++    "typecheck": "tsc --noEmit",
++    "test": "vitest run",
++    "test:unit": "vitest run"
+   },
+   "dependencies": {
+-    "@octapoint/sdk": "workspace:*"
++    "@modelcontextprotocol/sdk": "^1.20.0",
++    "@octapoint/sdk": "workspace:*",
++    "zod": "^3.23.8"
+   },
+   "devDependencies": {
+-    "@types/node": "^20.14.0"
++    "@types/node": "^20.14.0",
++    "tsx": "^4.19.0",
++    "vitest": "^2.1.0"
+   }
+ }
+diff --git a/packages/mcp/src/config.ts b/packages/mcp/src/config.ts
+new file mode 100644
+index 0000000..29cfd52
+--- /dev/null
++++ b/packages/mcp/src/config.ts
+@@ -0,0 +1,45 @@
++// Configuration of the MCP server: three environment variables, nothing else (api-spec C.1).
++
++export const ENV_NAMES = ['OCTAPOINT_BASE_URL', 'OCTAPOINT_API_KEY', 'OCTAPOINT_API_SECRET'] as const;
++
++export interface McpConfig {
++  baseUrl: string;
++  apiKey: string;
++  apiSecret: string;
++}
++
++/** Start-up problem with a message that is safe to print: it never contains a value, only variable names. */
++export class ConfigError extends Error {
++  constructor(message: string) {
++    super(message);
++    this.name = 'ConfigError';
++  }
++}
++
++export function loadConfig(env: Record<string, string | undefined>): McpConfig {
++  const value = (name: (typeof ENV_NAMES)[number]): string => (env[name] ?? '').trim();
++
++  const missing = ENV_NAMES.filter((name) => value(name) === '');
++  if (missing.length > 0) {
++    throw new ConfigError(
++      `OctaPoint MCP server cannot start. Missing environment variable${missing.length > 1 ? 's' : ''}: ` +
++        `${missing.join(', ')}. Set them in the configuration of your MCP client (see packages/mcp/README.md).`,
++    );
++  }
++
++  const baseUrl = value('OCTAPOINT_BASE_URL');
++  let protocol: string;
++  try {
++    protocol = new URL(baseUrl).protocol;
++  } catch {
++    protocol = '';
++  }
++  if (protocol !== 'http:' && protocol !== 'https:') {
++    throw new ConfigError(
++      'OctaPoint MCP server cannot start. OCTAPOINT_BASE_URL must be the origin of the API, ' +
++        'for example http://localhost:3001.',
++    );
++  }
++
++  return { baseUrl, apiKey: value('OCTAPOINT_API_KEY'), apiSecret: value('OCTAPOINT_API_SECRET') };
++}
+diff --git a/packages/mcp/src/index.ts b/packages/mcp/src/index.ts
+index f4e68d9..5f774a6 100644
+--- a/packages/mcp/src/index.ts
++++ b/packages/mcp/src/index.ts
+@@ -1,2 +1,34 @@
+-// Implemented in task T15 (docs/api-spec.md section C.1). Register read-only tools only (BR-14).
+-export {};
++import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
++import { OctaPointClient } from '@octapoint/sdk';
++import { ConfigError, loadConfig, type McpConfig } from './config.js';
++import { createServer } from './server.js';
++
++// OctaPoint MCP server (task T15, docs/api-spec.md C.1, BR-14): stdio, read-only tools only.
++// stdout carries the MCP protocol, so every message for humans goes to stderr. The API secret is never printed.
++
++async function main(): Promise<void> {
++  let config: McpConfig;
++  try {
++    config = loadConfig(process.env);
++  } catch (error) {
++    if (error instanceof ConfigError) {
++      console.error(error.message);
++      process.exit(1);
++    }
++    throw error;
++  }
++
++  const client = new OctaPointClient({
++    baseUrl: config.baseUrl,
++    apiKey: config.apiKey,
++    apiSecret: config.apiSecret,
++  });
++
++  await createServer(client).connect(new StdioServerTransport());
++  console.error(`OctaPoint MCP server ready (stdio, read-only). API: ${config.baseUrl}`);
++}
++
++main().catch((error: unknown) => {
++  console.error('OctaPoint MCP server stopped:', error instanceof Error ? error.message : 'unknown error');
++  process.exit(1);
++});
+diff --git a/packages/mcp/src/server.ts b/packages/mcp/src/server.ts
+new file mode 100644
+index 0000000..a38c2f4
+--- /dev/null
++++ b/packages/mcp/src/server.ts
+@@ -0,0 +1,53 @@
++import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
++import { z } from 'zod';
++import { createToolHandlers, type ReadOnlyClient, type ToolHandlers } from './tools.js';
++
++const customerCode = z
++  .string()
++  .describe('Customer code of the merchant, for example CUS001. Spaces and lower case are accepted.');
++
++/** Registers the three read-only tools (api-spec C.1). Nothing else is ever registered (BR-14). */
++export function registerTools(server: McpServer, handlers: ToolHandlers): void {
++  const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
++
++  server.registerTool(
++    'get_balance',
++    {
++      title: 'Get customer balance',
++      description: 'Returns the current point balance of one customer: { customer_code, balance }.',
++      inputSchema: { customer_code: customerCode },
++      annotations: readOnly,
++    },
++    (args) => handlers.get_balance(args),
++  );
++
++  server.registerTool(
++    'list_transactions',
++    {
++      title: 'List recent transactions',
++      description:
++        'Returns the latest 10 transactions of one customer, newest first: ' +
++        '[{ transaction_id, type, points, status, sui_digest }]. sui_digest is null until the transaction is anchored on Sui.',
++      inputSchema: { customer_code: customerCode },
++      annotations: readOnly,
++    },
++    (args) => handlers.list_transactions(args),
++  );
++
++  server.registerTool(
++    'get_loyalty_rules',
++    {
++      title: 'Get loyalty rules',
++      description:
++        'Returns the merchant loyalty rules: { earn_ratio (VND per point), min_redemption_threshold (points) }.',
++      annotations: readOnly,
++    },
++    () => handlers.get_loyalty_rules(),
++  );
++}
++
++export function createServer(client: ReadOnlyClient): McpServer {
++  const server = new McpServer({ name: 'octapoint', version: '0.1.0' });
++  registerTools(server, createToolHandlers(client));
++  return server;
++}
+diff --git a/packages/mcp/src/tools.ts b/packages/mcp/src/tools.ts
+new file mode 100644
+index 0000000..644654c
+--- /dev/null
++++ b/packages/mcp/src/tools.ts
+@@ -0,0 +1,98 @@
++import { OctaPointError } from '@octapoint/sdk';
++import type { Balance, LoyaltyRules, Page, Transaction } from '@octapoint/sdk';
++import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
++
++// Tool logic of the MCP server (SRS 3.2.4.1, api-spec C.1, BR-14). No MCP types are needed here except the result
++// shape, so everything can be tested with a fake client.
++
++/**
++ * The ONLY tools of the server. They are read-only (BR-14). Adding a name here must be a conscious scope decision:
++ * tools.test.ts fails for any other name and for names that suggest a write.
++ */
++export const TOOL_NAMES = ['get_balance', 'list_transactions', 'get_loyalty_rules'] as const;
++export type ToolName = (typeof TOOL_NAMES)[number];
++
++/** `list_transactions` returns the latest 10 (the first 10 items of page 1, newest first). */
++export const TRANSACTION_LIMIT = 10;
++
++/**
++ * The part of the SDK client that the tools may use. It lists read methods only: a tool that issues, redeems or
++ * changes anything has no method to call.
++ */
++export interface ReadOnlyClient {
++  getBalance(customerCode: string): Promise<Balance>;
++  listTransactions(customerCode: string): Promise<Page<Transaction>>;
++  getLoyaltyRules(): Promise<LoyaltyRules>;
++}
++
++export interface CustomerArgs {
++  customer_code: string;
++}
++
++export interface ToolHandlers {
++  get_balance(args: CustomerArgs): Promise<CallToolResult>;
++  list_transactions(args: CustomerArgs): Promise<CallToolResult>;
++  get_loyalty_rules(): Promise<CallToolResult>;
++}
++
++/** AI assistants often send lower case or spaces; the API itself stays strict (lower case answers MSG33). */
++export function normalizeCustomerCode(value: string): string {
++  return value.trim().toUpperCase();
++}
++
++function success(data: unknown): CallToolResult {
++  return { content: [{ type: 'text', text: JSON.stringify(data) }] };
++}
++
++function failure(code: string, message: string): CallToolResult {
++  return { isError: true, content: [{ type: 'text', text: JSON.stringify({ code, message }) }] };
++}
++
++/** API errors keep their original code and message (MSG18, MSG22 ...). Anything else becomes MSG23 without details. */
++function toFailure(error: unknown): CallToolResult {
++  if (error instanceof OctaPointError) return failure(error.code, error.message);
++  return failure('MSG23', 'Unexpected error while calling the OctaPoint API.');
++}
++
++async function run(action: () => Promise<unknown>): Promise<CallToolResult> {
++  try {
++    return success(await action());
++  } catch (error) {
++    return toFailure(error);
++  }
++}
++
++export function createToolHandlers(client: ReadOnlyClient): ToolHandlers {
++  return {
++    async get_balance(args) {
++      const code = normalizeCustomerCode(args.customer_code);
++      if (code === '') return failure('MSG33', 'customer_code must not be empty.');
++      return run(async () => {
++        const result = await client.getBalance(code);
++        return { customer_code: result.customerCode, balance: result.balance };
++      });
++    },
++
++    async list_transactions(args) {
++      const code = normalizeCustomerCode(args.customer_code);
++      if (code === '') return failure('MSG33', 'customer_code must not be empty.');
++      return run(async () => {
++        const page = await client.listTransactions(code);
++        return page.items.slice(0, TRANSACTION_LIMIT).map((item) => ({
++          transaction_id: item.transactionId,
++          type: item.type,
++          points: item.points,
++          status: item.status,
++          sui_digest: item.suiDigest,
++        }));
++      });
++    },
++
++    async get_loyalty_rules() {
++      return run(async () => {
++        const rules = await client.getLoyaltyRules();
++        return { earn_ratio: rules.earnRatio, min_redemption_threshold: rules.minRedemptionThreshold };
++      });
++    },
++  };
++}
+diff --git a/packages/mcp/test/tools.test.ts b/packages/mcp/test/tools.test.ts
+new file mode 100644
+index 0000000..6e98a13
+--- /dev/null
++++ b/packages/mcp/test/tools.test.ts
+@@ -0,0 +1,224 @@
++import { describe, expect, it, vi } from 'vitest';
++import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
++import { OctaPointError } from '@octapoint/sdk';
++import type { Transaction } from '@octapoint/sdk';
++import { ConfigError, loadConfig } from '../src/config.js';
++import { registerTools } from '../src/server.js';
++import {
++  TOOL_NAMES,
++  createToolHandlers,
++  normalizeCustomerCode,
++  type ReadOnlyClient,
++} from '../src/tools.js';
++
++function transaction(n: number): Transaction {
++  return {
++    transactionId: `TXN-20261101-${String(n).padStart(8, '0')}`,
++    type: n % 2 === 0 ? 'REDEEM' : 'ISSUE',
++    customerCode: 'CUS001',
++    points: n,
++    balanceAfter: 1000 + n,
++    status: n === 1 ? 'ANCHORED' : 'PENDING_ANCHOR',
++    suiDigest: n === 1 ? 'DIGEST1' : null,
++    explorerUrl: n === 1 ? 'https://example.test/tx/DIGEST1' : null,
++    reversesTransactionId: null,
++    createdAt: '2026-11-01T03:15:42.123Z',
++  };
++}
++
++function fakeClient(overrides: Partial<ReadOnlyClient> = {}): ReadOnlyClient & {
++  getBalance: ReturnType<typeof vi.fn>;
++  listTransactions: ReturnType<typeof vi.fn>;
++  getLoyaltyRules: ReturnType<typeof vi.fn>;
++} {
++  return {
++    getBalance: vi.fn().mockResolvedValue({ customerCode: 'CUS001', balance: 4200 }),
++    listTransactions: vi.fn().mockResolvedValue({
++      items: Array.from({ length: 15 }, (_, i) => transaction(i + 1)),
++      page: 1,
++      pageSize: 20,
++      total: 15,
++    }),
++    getLoyaltyRules: vi.fn().mockResolvedValue({ earnRatio: 10000, minRedemptionThreshold: 50 }),
++    ...overrides,
++  } as never;
++}
++
++function payload(result: { content: { type: string; text?: string }[] }): unknown {
++  const first = result.content[0];
++  return JSON.parse(first?.text ?? 'null');
++}
++
++describe('tool list (BR-14: read-only)', () => {
++  it('is exactly the three read tools of api-spec C.1', () => {
++    expect([...TOOL_NAMES]).toEqual(['get_balance', 'list_transactions', 'get_loyalty_rules']);
++  });
++
++  it('contains no name that suggests a write', () => {
++    const forbidden = /issue|redeem|reverse|create|update|delete|write|set|add|remove|revoke|deactivate|approve/i;
++    for (const name of TOOL_NAMES) expect(name).not.toMatch(forbidden);
++  });
++
++  it('registers exactly those tools on the server, nothing more', () => {
++    const registered: string[] = [];
++    const server = {
++      registerTool: (name: string) => {
++        registered.push(name);
++        return {};
++      },
++    } as unknown as McpServer;
++    registerTools(server, createToolHandlers(fakeClient()));
++    expect(registered).toEqual([...TOOL_NAMES]);
++  });
++
++  it('has one handler per tool and the client type offers read methods only', () => {
++    const handlers = createToolHandlers(fakeClient());
++    expect(Object.keys(handlers).sort()).toEqual([...TOOL_NAMES].sort());
++  });
++
++  it('never calls a write method, even if the client object has them', async () => {
++    const client = Object.assign(fakeClient(), { issuePoints: vi.fn(), redeemPoints: vi.fn() });
++    const handlers = createToolHandlers(client);
++    await handlers.get_balance({ customer_code: 'CUS001' });
++    await handlers.list_transactions({ customer_code: 'CUS001' });
++    await handlers.get_loyalty_rules();
++    expect(client.issuePoints).not.toHaveBeenCalled();
++    expect(client.redeemPoints).not.toHaveBeenCalled();
++  });
++});
++
++describe('customer code handling (SRS 3.2.4.1 step 2)', () => {
++  it('trims and upper-cases', () => {
++    expect(normalizeCustomerCode(' cus001 ')).toBe('CUS001');
++  });
++
++  it("sends ' cus001 ' to the API as CUS001 (both tools)", async () => {
++    const client = fakeClient();
++    const handlers = createToolHandlers(client);
++    await handlers.get_balance({ customer_code: ' cus001 ' });
++    await handlers.list_transactions({ customer_code: ' cus001 ' });
++    expect(client.getBalance).toHaveBeenCalledWith('CUS001');
++    expect(client.listTransactions).toHaveBeenCalledWith('CUS001');
++  });
++
++  it('answers MSG33 without calling the API when the code is empty', async () => {
++    const client = fakeClient();
++    const result = await createToolHandlers(client).get_balance({ customer_code: '   ' });
++    expect(result.isError).toBe(true);
++    expect(payload(result)).toMatchObject({ code: 'MSG33' });
++    expect(client.getBalance).not.toHaveBeenCalled();
++  });
++});
++
++describe('output mapping (api-spec C.1)', () => {
++  it('get_balance returns { customer_code, balance }', async () => {
++    const result = await createToolHandlers(fakeClient()).get_balance({ customer_code: 'CUS001' });
++    expect(result.isError).toBeUndefined();
++    expect(payload(result)).toEqual({ customer_code: 'CUS001', balance: 4200 });
++  });
++
++  it('list_transactions returns the first 10, in the order of the API, with snake_case fields only', async () => {
++    const result = await createToolHandlers(fakeClient()).list_transactions({ customer_code: 'CUS001' });
++    const items = payload(result) as Record<string, unknown>[];
++    expect(items).toHaveLength(10);
++    expect(items[0]).toEqual({
++      transaction_id: 'TXN-20261101-00000001',
++      type: 'ISSUE',
++      points: 1,
++      status: 'ANCHORED',
++      sui_digest: 'DIGEST1',
++    });
++    expect(items[9]?.transaction_id).toBe('TXN-20261101-00000010');
++    expect(items[1]).toMatchObject({ status: 'PENDING_ANCHOR', sui_digest: null });
++    for (const item of items) {
++      expect(Object.keys(item).sort()).toEqual(['points', 'status', 'sui_digest', 'transaction_id', 'type']);
++    }
++  });
++
++  it('list_transactions returns an empty list for a customer without transactions', async () => {
++    const client = fakeClient({
++      listTransactions: vi.fn().mockResolvedValue({ items: [], page: 1, pageSize: 20, total: 0 }),
++    });
++    const result = await createToolHandlers(client).list_transactions({ customer_code: 'CUS001' });
++    expect(payload(result)).toEqual([]);
++  });
++
++  it('get_loyalty_rules returns { earn_ratio, min_redemption_threshold }', async () => {
++    const result = await createToolHandlers(fakeClient()).get_loyalty_rules();
++    expect(payload(result)).toEqual({ earn_ratio: 10000, min_redemption_threshold: 50 });
++  });
++});
++
++describe('errors', () => {
++  it('keeps the original code and message of an API error (MSG22, MSG18, MSG32)', async () => {
++    const cases: [string, string][] = [
++      ['MSG22', 'Customer not found.'],
++      ['MSG18', 'Invalid or inactive API credentials.'],
++      ['MSG32', 'Loyalty rules are not set.'],
++    ];
++    for (const [code, message] of cases) {
++      const client = fakeClient({
++        getBalance: vi.fn().mockRejectedValue(new OctaPointError(code, message, 400)),
++        getLoyaltyRules: vi.fn().mockRejectedValue(new OctaPointError(code, message, 400)),
++      });
++      const handlers = createToolHandlers(client);
++      for (const result of [await handlers.get_balance({ customer_code: 'CUS999' }), await handlers.get_loyalty_rules()]) {
++        expect(result.isError).toBe(true);
++        expect(payload(result)).toEqual({ code, message });
++      }
++    }
++  });
++
++  it('turns an unexpected error into MSG23 and does not leak its text', async () => {
++    const client = fakeClient({
++      listTransactions: vi.fn().mockRejectedValue(new Error('secret-token-123 leaked')),
++    });
++    const result = await createToolHandlers(client).list_transactions({ customer_code: 'CUS001' });
++    expect(result.isError).toBe(true);
++    expect(payload(result)).toMatchObject({ code: 'MSG23' });
++    expect(JSON.stringify(result)).not.toContain('secret-token-123');
++  });
++});
++
++describe('configuration (start-up check)', () => {
++  const valid = {
++    OCTAPOINT_BASE_URL: 'http://localhost:3001',
++    OCTAPOINT_API_KEY: 'oct_abc',
++    OCTAPOINT_API_SECRET: 'super-secret-value',
++  };
++
++  it('accepts the three variables and trims them', () => {
++    expect(loadConfig({ ...valid, OCTAPOINT_API_KEY: ' oct_abc ' })).toEqual({
++      baseUrl: 'http://localhost:3001',
++      apiKey: 'oct_abc',
++      apiSecret: 'super-secret-value',
++    });
++  });
++
++  function messageOf(env: Record<string, string | undefined>): string {
++    try {
++      loadConfig(env);
++    } catch (error) {
++      expect(error).toBeInstanceOf(ConfigError);
++      return (error as Error).message;
++    }
++    throw new Error('loadConfig should have thrown');
++  }
++
++  it('names every missing variable in one message', () => {
++    const message = messageOf({ OCTAPOINT_API_KEY: 'oct_abc' });
++    expect(message).toContain('OCTAPOINT_BASE_URL');
++    expect(message).toContain('OCTAPOINT_API_SECRET');
++    expect(message).not.toContain('OCTAPOINT_API_KEY');
++  });
++
++  it('treats a blank value as missing', () => {
++    expect(messageOf({ ...valid, OCTAPOINT_API_SECRET: '   ' })).toContain('OCTAPOINT_API_SECRET');
++  });
++
++  it('rejects a base URL that is not http(s) and never prints the secret', () => {
++    const message = messageOf({ ...valid, OCTAPOINT_BASE_URL: 'not a url' });
++    expect(message).toContain('OCTAPOINT_BASE_URL');
++    expect(message).not.toContain('super-secret-value');
++  });
++});
+diff --git a/packages/mcp/tsconfig.json b/packages/mcp/tsconfig.json
+index 2322097..49c2551 100644
+--- a/packages/mcp/tsconfig.json
++++ b/packages/mcp/tsconfig.json
+@@ -1,5 +1,5 @@
+ {
+   "extends": "../../tsconfig.base.json",
+   "compilerOptions": { "noEmit": true, "types": ["node"] },
+-  "include": ["src"]
++  "include": ["src", "test"]
+ }
+diff --git a/packages/sdk/README.md b/packages/sdk/README.md
+index a59e184..bf2b4d7 100644
+--- a/packages/sdk/README.md
++++ b/packages/sdk/README.md
+@@ -30,6 +30,7 @@ const page = await client.listTransactions('CUS001', { page: 1, type: 'ISSUE', d
+ | `redeemPoints({ customerCode, points, idempotencyKey? })` | `Transaction` |
+ | `getBalance(customerCode)` | `{ customerCode, balance }` |
+ | `listTransactions(customerCode, { page?, type?, status?, dateFrom?, dateTo? })` | `Page<Transaction>` (20 per page, newest first) |
++| `getLoyaltyRules()` | `{ earnRatio, minRedemptionThreshold }` (`MSG32` when the Owner has not saved rules) |
+ 
+ Field names are camelCase (`transactionId`, `balanceAfter`, `suiDigest`, `explorerUrl` ...). A transaction is
+ `PENDING_ANCHOR` until the worker writes it to Sui; `suiDigest` and `explorerUrl` are then filled.
+diff --git a/packages/sdk/src/client.ts b/packages/sdk/src/client.ts
+index ccdba26..6228a6f 100644
+--- a/packages/sdk/src/client.ts
++++ b/packages/sdk/src/client.ts
+@@ -5,6 +5,7 @@ import type {
+   Balance,
+   IssuePointsInput,
+   ListTransactionsOptions,
++  LoyaltyRules,
+   OctaPointClientOptions,
+   Page,
+   RedeemPointsInput,
+@@ -144,6 +145,15 @@ export class OctaPointClient {
+     };
+   }
+ 
++  /** Should-have (used by the MCP tool get_loyalty_rules). MSG32 when the Owner has not saved rules yet. */
++  async getLoyaltyRules(): Promise<LoyaltyRules> {
++    const raw = await this.request<{ earn_ratio: number; min_redemption_threshold: number }>(
++      'GET',
++      '/loyalty-rules',
++    );
++    return { earnRatio: raw.earn_ratio, minRedemptionThreshold: raw.min_redemption_threshold };
++  }
++
+   private async request<T>(
+     method: 'GET' | 'POST',
+     path: string,
+diff --git a/packages/sdk/src/index.ts b/packages/sdk/src/index.ts
+index 4db20a4..6818bdc 100644
+--- a/packages/sdk/src/index.ts
++++ b/packages/sdk/src/index.ts
+@@ -4,6 +4,7 @@ export type {
+   Balance,
+   IssuePointsInput,
+   ListTransactionsOptions,
++  LoyaltyRules,
+   OctaPointClientOptions,
+   Page,
+   RedeemPointsInput,
+diff --git a/packages/sdk/src/types.ts b/packages/sdk/src/types.ts
+index 27553be..8e11601 100644
+--- a/packages/sdk/src/types.ts
++++ b/packages/sdk/src/types.ts
+@@ -30,6 +30,14 @@ export interface Balance {
+   balance: number;
+ }
+ 
++/** Loyalty rules of the merchant (GET /loyalty-rules, api-spec A.3). */
++export interface LoyaltyRules {
++  /** VND per point. */
++  earnRatio: number;
++  /** Smallest number of points that can be redeemed. */
++  minRedemptionThreshold: number;
++}
++
+ export interface OctaPointClientOptions {
+   /** Origin of the API, for example "http://localhost:3001". "/api/v1" is added by the SDK. */
+   baseUrl: string;
+diff --git a/packages/sdk/test/client.test.ts b/packages/sdk/test/client.test.ts
+index 07ca4b5..c11a568 100644
+--- a/packages/sdk/test/client.test.ts
++++ b/packages/sdk/test/client.test.ts
+@@ -278,3 +278,30 @@ describe('configuration', () => {
+     expect(() => new OctaPointClient({ ...ok, timeoutMs: 0 })).toThrow(TypeError);
+   });
+ });
++
++describe('getLoyaltyRules (api-spec A.3, used by the MCP server)', () => {
++  it('sends a signed GET without body and maps the answer to camelCase', async () => {
++    respond(200, { earn_ratio: 10000, min_redemption_threshold: 50 });
++    const rules = await client().getLoyaltyRules();
++
++    expect(rules).toEqual({ earnRatio: 10000, minRedemptionThreshold: 50 });
++    const sent = lastSent();
++    expect(sent.url).toBe('http://localhost:3001/api/v1/loyalty-rules');
++    expect(sent.method).toBe('GET');
++    expect(sent.body).toBeUndefined();
++    expect(sent.headers['X-Signature']).toBe(
++      sign(SECRET, {
++        timestamp: '1700000000',
++        method: 'GET',
++        target: '/api/v1/loyalty-rules',
++        body: '',
++      }),
++    );
++    expect(sent.headers).not.toHaveProperty('X-Idempotency-Key');
++  });
++
++  it('throws OctaPointError MSG32 when the rules are not set', async () => {
++    respond(422, { code: 'MSG32', message: 'Loyalty rules are not set.' });
++    await expect(client().getLoyaltyRules()).rejects.toMatchObject({ code: 'MSG32', httpStatus: 422 });
++  });
++});

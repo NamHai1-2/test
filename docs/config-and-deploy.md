@@ -68,6 +68,7 @@ Constants in code (not env): business time zone `Asia/Ho_Chi_Minh` (UTC+7), time
 | Variable | Example | Purpose |
 |---|---|---|
 | `API_BASE_URL` | `https://octapoint-api.onrender.com` | Target of the `/api/*` proxy rewrite |
+| `NEXT_PUBLIC_USE_MOCKS` | `false` | `true` runs the portal on in-memory demo data (`src/lib/mocks.ts`) with no API or database; demo logins are listed on the login page. Never `true` in production |
 
 ### MCP server and SDK samples
 `OCTAPOINT_BASE_URL`, `OCTAPOINT_API_KEY`, `OCTAPOINT_API_SECRET` (see `api-spec.md` C.1).

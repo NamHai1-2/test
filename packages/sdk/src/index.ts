@@ -4,6 +4,7 @@ export type {
   Balance,
   IssuePointsInput,
   ListTransactionsOptions,
+  LoyaltyRules,
   OctaPointClientOptions,
   Page,
   RedeemPointsInput,
