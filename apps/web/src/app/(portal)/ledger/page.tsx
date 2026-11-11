@@ -19,7 +19,7 @@ import { listMerchantLedger, reverseTransaction } from '@/lib/api-client';
 import type { LedgerFilters, LedgerItem, TxStatus, TxType } from '@/lib/api-types';
 import { useAuth } from '@/lib/auth';
 import { formatDateTime, formatNumber, shortenMiddle } from '@/lib/format';
-import { errorText, notifyError, notifySuccess } from '@/lib/notify';
+import { errorText, notifySuccess } from '@/lib/notify';
 import { useApi } from '@/lib/use-api';
 import { cn } from '@/lib/utils';
 
